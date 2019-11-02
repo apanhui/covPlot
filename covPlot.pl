@@ -33,10 +33,12 @@ my $samtools = "/Bio/bin/samtools-1.9";
 #-------------------------------------------------------------------------------
 #  set the options
 #-------------------------------------------------------------------------------
-my %OPTS = (conf=>"$Bin/asMap.conf");
+my %OPTS = (conf=>"$Bin/covPlot.conf");
 GetOptions(\%OPTS,
-    'conf:s','loci:s','gene:s','beds:s','labels:s','colors:s','juncs:s',
+    'conf:s','gene:s','beds:s','labels:s','colors:s','juncs:s',
+    'upstream:i','downstream:i',
     'intron_fix:i','intron_scale:s','intron_background:s',
+    'show_heads','show_tails',
     'width:i','from_top:s','help');
 
 &usage if ($OPTS{'help'});
@@ -100,9 +102,11 @@ my @marker = fetch_marker($conf,$chr,$start,$end);
 #-------------------------------------------------------------------------------
 # prepare to draw
 #-------------------------------------------------------------------------------
-my @flags   = ("exon");
-my %colors  = (five_prime_utr=>"#C01C30","CDS"=>"#29B473","three_prime_utr"=>"#2A3890",exon=>"#000000");
-my %heights = (five_prime_utr=>14,CDS=>18,three_prime_utr=>14,exon=>18);
+my @flags   = split /,/ , $conf->{element_flags};
+my %colors  = (upstream=>"#000000",five_prime_utr=>"#C01C30","CDS"=>"#29B473",
+                three_prime_utr=>"#2A3890",exon=>"#000000",downstream=>"#000000",
+                mRNA=>"#000000",gene=>"#000000");
+my %heights = (upstream=>8,five_prime_utr=>14,CDS=>18,three_prime_utr=>14,exon=>18,downstream=>8,mRNA=>18,gene=>18);
 %colors  = fetch_styles($conf->{colors},%colors);
 %heights = fetch_styles($conf->{heights},%heights);
 
@@ -115,6 +119,10 @@ timeLOG "rebuild the region coordinate system done ... ";
 
 # calc depths for each samples with window
 my @regions = fetch_regions(\%flags,$start,$end);
+my @exon_regions = @regions;
+
+$exon_regions[0]  = $loci{gene_start};
+$exon_regions[-1] = $loci{gene_end};
 
 my %rdepths;
 my $all_max_depth = 0;
@@ -255,8 +263,9 @@ if ($conf->{show_transcirpts}){
 
 # draw marker 
     if (@marker){
-        my $color = $conf->{marker_color};
-        my $height = $conf->{marker_height};
+        my $name   = $conf->{marker}->{name};
+        my $color  = $conf->{marker}->{color};
+        my $height = $conf->{marker}->{heights};
 
         foreach my $mark (@marker) {
             my ($msta,$mend,$mid) = @$mark;
@@ -266,9 +275,9 @@ if ($conf->{show_transcirpts}){
                     width=>$endx-$startx,height=>$height,style=>"stroke-width:0;fill:$color;");
         }
 
-        push @flags , "TE";
-        $heights{"TE"} = $height;
-        $colors{"TE"} = $color;
+        push @flags , $name;
+        $heights{$name} = $height;
+        $colors{$name}  = $color;
         $toy += $tsh + $spacing;
 
         timeLOG("the marker info was drew ...");
@@ -416,7 +425,7 @@ if ($conf->{intron_background}){
 #-------------------------------------------------------------------------------
 #  draw the exons in the bottom
 #-------------------------------------------------------------------------------
-if ($conf->{show_tails}){
+if ($conf->{show_tails} || $OPTS{show_tails}){
     my $bottom = $svg->g(id=>"bottom");
 
 ## draw ref genes
@@ -424,12 +433,13 @@ if ($conf->{show_tails}){
 
 # draw backbone line
     my $gene_arrowid = "gene_arrow_tail";
-    end_arrow($defs,$gene_arrowid,10,6,-zh=>0,-style=>"stroke-width:1;stroke:#000;fill:#000");
+    end_arrow($defs,$gene_arrowid,10,6,-zh=>0,-style=>"stroke-width:1;stroke:#000;fill:$colors{exon}");
 
     my ($gx1,$gx2) = ($gox,$gex);
     ($gx1,$gx2) = ($gx2,$gx1) if ($strand eq "-");
-    $bottom->line(x1=>$gx1,x2=>$gx2,y1=>$goy,y2=>$goy,style=>"stroke-width:2;stroke:$colors{backbone}",
-            'marker-end'=>"url(#$gene_arrowid)");
+    #$bottom->line(x1=>$gx1,x2=>$gx2,y1=>$goy,y2=>$goy,style=>"stroke-width:2;stroke:$colors{backbone}",
+    #        'marker-end'=>"url(#$gene_arrowid)");
+    $bottom->line(x1=>$gx1,x2=>$gx2,y1=>$goy,y2=>$goy,style=>"stroke-width:2;stroke:$colors{backbone}");
 
 ## draw the backgroud of arrow for line plot
     my $alw = 60;
@@ -448,9 +458,9 @@ if ($conf->{show_tails}){
     $bottom->rect(x=>$gox,y=>$goy-$alh/2,width=>$gex-$gox,height=>$alh,style=>"stroke-width:0;fill:url(#alb)");
 
 # draw exons
-    for(my$i=0; $i<= $#regions-1; $i+=2){
-        my $exon_sta = $regions[$i];
-        my $exon_end = $regions[$i+1];
+    for(my$i=0; $i<= $#exon_regions-1; $i+=2){
+        my $exon_sta = $exon_regions[$i];
+        my $exon_end = $exon_regions[$i+1];
 
         my $exon_x1 = $gox + fetch_axis_dis($coord{$exon_sta},1,$count,$gex-$gox);
         my $exon_x2 = $gox + fetch_axis_dis($coord{$exon_end},1,$count,$gex-$gox);
@@ -474,7 +484,7 @@ if ($conf->{show_tails}){
 }
 
 # draw legend for TS
-if ($legend)
+if ($legend && $conf->{show_transcirpts})
 {
     my $ly = $oy;
     my $lx = $gex + $spacing * 2;
@@ -483,13 +493,12 @@ if ($legend)
     {
         my $item_h = $heights{$item};
         $svg->rect(x=>$lx,y=>$ly+$lh/2-$item_h/2,width=>$lw,height=>$item_h,style=>"stroke-width:0;fill:$colors{$item};");
-        $svg->text(x=>$lx+$lw+$spacing,y=>$ly+$lh/2+$font_height/2)->cdata($item);
+        $svg->text(x=>$lx+$lw+$spacing,y=>$ly+$lh/2+$font_height/2,style=>$font_style)->cdata($item);
         $ly += $lh + $spacing;
     }
 
     timeLOG("the Legend was drew ...");
 }
-
 
 ##  save figure
 # reset the svg heigt
@@ -507,7 +516,7 @@ timeLOG("the figure [$gene.CovPlot.svg] was finished :)");
 sub fetch_gene_loci {
     my ($gtf,$gene) = @_;
 
-    my %flags = (exon=>1);
+    my %flags = map { $_ => 1 } split /,/ , $conf->{element_flags};
     my @loci;
     my %loci;
 
@@ -519,8 +528,8 @@ sub fetch_gene_loci {
         
         my ($chr,$flag,$start,$end,$strand,$attrs) = (split /\t/)[0,2,3,4,6,8];
         next unless $flags{$flag};
-
-        my $tsid     = $attrs =~ /transcript_id \"([\w\-\.]+)\";/ ? $1 : die;
+        
+        my $tsid     = $attrs =~ /transcript_id \"([\w\-\.]+)\";/  ? $1 : die;
         my $geneid   = $attrs =~ /gene_id \"([\w\-\.]+)\";/       ? $1 : die;
         my $genename = $attrs =~ /gene_name \"([\w\-\.]+)\";/     ? $1 : "";
         next unless ($geneid eq $gene || ($genename && $genename eq $gene) );
@@ -534,11 +543,21 @@ sub fetch_gene_loci {
     }
     close GTF;
     
-    ERROR("gene_not_in_gtf","$gene is not exists in gtf file!") if ($#loci == -1);
+    ERROR("gene_not_in_gtf, $gene is not exists in gtf file!") if ($#loci == -1);
 
     $loci{start} = min(@loci);
     $loci{end} = max(@loci);
+    $loci{gene_start} = $loci{start};
+    $loci{gene_end} = $loci{end};
     
+    if ($loci{strand} eq "+"){
+        $loci{start} -= $conf->{upstream}   if $conf->{upstream};
+        $loci{end}   += $conf->{downstream} if $conf->{downstream};
+    }elsif ($loci{strand} eq "-"){
+        $loci{start} -= $conf->{downstream} if $conf->{downstream};
+        $loci{end}   += $conf->{upstream}   if $conf->{upstream};
+    }
+   
     return %loci;
 }
 
@@ -554,6 +573,8 @@ sub check_conf {
     default_OPTS($conf,"width");
     default_OPTS($conf,"unit_depth_height");
     default_OPTS($conf,"intron_background");
+    default_OPTS($conf,"upstream");
+    default_OPTS($conf,"downstream");
     $conf->{legend} = 1 if ($OPTS{legend});
 
     ERROR("[no_gtf_ERROR] gtf file must be defined") unless $conf->{gtf};
@@ -564,10 +585,11 @@ sub check_conf {
     default_set($conf,"intron_background",1);
     default_set($conf,"intron_scale","auto");
     default_set($conf,"min_junction_depth",3);
-    default_set($conf,"marker_color","#FF0000");
-    default_set($conf,"marker_height",18);
     default_set($conf,"format","tophat2");
     default_set($conf,"samples_label_pos","left");
+    default_set($conf,"upstream",0);
+    default_set($conf,"downstream",0);
+    default_set($conf,"element_flags","exon");
 
     return $conf;
 }
@@ -575,7 +597,7 @@ sub check_conf {
 # the OPTS defined will cover the conf file defined
 sub default_OPTS {
     my ($conf,$attr) = @_;
-    $conf->{$attr} = $OPTS{$attr} if ($OPTS{$attr});
+    $conf->{$attr} = $OPTS{$attr} if (defined $OPTS{$attr});
 }
 
 # set the default value which not defined 
@@ -662,6 +684,14 @@ sub exon_or_intron {
         }
     }
     
+    if ( ($conf->{upstream} && $loci->{strand} eq "+") || ($conf->{downstream} && $loci->{strand} eq "-") ){
+        for ($start .. $loci->{gene_start}-1){ $coord{$_} = 1 }
+    }
+
+    if ( ($conf->{downstream} && $loci->{strand} eq "+") || ($conf->{upstream} && $loci->{strand} eq "-" ) ){
+        for ($loci->{gene_end}+1 .. $end){ $coord{$_} =1 }
+    }
+
     return %coord;
 }
 
@@ -687,6 +717,13 @@ sub rebuild_gene_coord {
         }
     }
    
+    if ($conf->{upstream}){
+        for ($start .. $loci->{gene_start}-1){ $coord{$_} = 1 }
+    }
+
+    if ($conf->{downstream}){
+        for ($loci->{gene_end}+1 .. $end){ $coord{$_} =1 }
+    }
 
     my $count = 0;
     if ($conf->{intron_fix}){
@@ -948,9 +985,9 @@ sub fetch_marker {
     my ($conf,$chr,$sta,$end) = @_;
     my @marker;
     
-    return @marker unless $conf->{marker} ;
+    return @marker unless ($conf->{marker}  && $conf->{marker}->{loci});
 
-    open my $fh_marker , $conf->{marker} or die $!;
+    open my $fh_marker , $conf->{marker}->{loci} or die $!;
     while(<$fh_marker>){
         chomp;
         my ($mchr,$msta,$mend,$id) = split /\t/;
@@ -1029,8 +1066,8 @@ set bams in cmd:  perl $0 [options] --conf your.conf [ --gene target_gene ] <*.b
 
 Import Options:
          --help                      print the simple usage info
-         --conf   <FILE>             the configuration file, ["$Bin/asMap.conf"]
-         --gene   <STR>              set the gene name which you want to draw (must be in the gtf file)
+         --conf   <FILE>             the configuration file, demo: "$Bin/covPlot.conf"
+         --gene   <STR>              set the gene name which you want to draw (must be in the gtf file), conlict with --loci
          --gtf    <FILE>             set the gtf file
 
 Options for simple model ( bam files defined in cmd ):
@@ -1039,12 +1076,16 @@ Options for simple model ( bam files defined in cmd ):
          --colors <STR>[s]           set the colors for bam files, Separated by commas
 
 Styles Options (it's better to be set in conf file):
-         --intron_fix         <INT>      fix the intron sizse as [200] nt
+         --intron_fix         <INT>      fix the intron sizse as [200] nt, recommended if you set upstream or downstream
          --intron_scale       <FLOAT>    zoom the intron size as [auto] ratio to raw size, [scale the introns total size == exons]
          --intron_background             display the intron backgroud or not
          --width              <INT>      the width size of the figure, [1000]
          --from_top                      the connect junction lines draw from top first, otherwise will from bottom
          --unit_depth_height  <INT>      the unit depth height of each sample, [100]
+         --show_heads                    show the head part ( plot the gene and each transcript in the head part )
+         --show_tails                    show the tail part ( plot the gene and exons in the tail part )
+
+Note: for --intron_scale, the upstream and downstream are considered as exons
 
 HELP
     exit 1;
