@@ -13,6 +13,7 @@ use warnings;
 use SVG;
 use Config::General;
 use Getopt::Long;
+use Math::Round;
 use File::Basename qw/basename dirname/;
 use FindBin qw($Bin);
 use List::Util qw/min max sum/;
@@ -35,10 +36,11 @@ my $samtools = "/Bio/bin/samtools-1.9";
 #-------------------------------------------------------------------------------
 my %OPTS = (conf=>"$Bin/covPlot.conf");
 GetOptions(\%OPTS,
-    'conf:s','gene:s','beds:s','labels:s','colors:s','juncs:s',
+    'conf:s','gene:s','gtf:s','beds:s','labels:s','colors:s','juncs:s',
     'upstream:i','downstream:i',
     'intron_fix:i','intron_scale:s','intron_background:s',
     'show_heads','show_tails',
+    'strand','methy_type',
     'width:i','from_top:s','help');
 
 &usage if ($OPTS{'help'});
@@ -131,7 +133,10 @@ for my $sample (@samples) {
     my @temp = calc_depths($depths{$sample},$styles{$sample}{window},\@regions,\%coord);
     $rdepths{$sample}{depths} = \@temp;
     my @nums = map { $_->[1] } @temp;
-    $rdepths{$sample}{max_depth} = max(@nums);
+    my $max = max(@nums);
+    my $min = min(@nums);
+    $rdepths{$sample}{max_depth} = max($max,abs($min));
+    $rdepths{$sample}{min_depth} = $min;
     $all_max_depth = $rdepths{$sample}{max_depth} if ($all_max_depth < $rdepths{$sample}{max_depth});
 }
 
@@ -179,7 +184,7 @@ my $intron_bg = $svg->g(id=>"intron_bg");
 my @tsids = keys %{$loci{loci}};
 my $gene_width = $font->fetch_max_text_width( [$gene,@tsids] );
 my $max_sample_width = $font->fetch_max_text_width(\@samples);
-my $max_tick_width = $font->fetch_text_width( $all_max_depth );
+my $max_tick_width = $all_max_depth != 1 ? $font->fetch_text_width( $all_max_depth ) : $font->fetch_text_width("0.2");
 my $left_width = $spacing;
 if ($conf->{samples_label_pos} eq "left"){
     my $tmp = $max_tick_width + $max_sample_width + $spacing;
@@ -265,7 +270,7 @@ if ($conf->{show_transcirpts}){
     if (@marker){
         my $name   = $conf->{marker}->{name};
         my $color  = $conf->{marker}->{color};
-        my $height = $conf->{marker}->{heights};
+        my $height = $conf->{marker}->{height};
 
         foreach my $mark (@marker) {
             my ($msta,$mend,$mid) = @$mark;
@@ -308,8 +313,9 @@ foreach my $sample (@samples){
     my @depths = @{$rdepths{$sample}{depths}};
     my $max_num  = $conf->{fix_axis} && $conf->{max_depth} ? $conf->{max_depth}  :
                                         $conf->{fix_axis}  ? $all_max_depth/$rdh : $rdepths{$sample}{max_depth}/$rdh;
+    my $min_num  = $rdepths{$sample}{min_depth} < 0 ? -$max_num : 0;
 
-    my $dividing = dividing(0,$max_num,-ntrue=>1,-xtrue=>1);
+    my $dividing = dividing($min_num,$max_num,-ntrue=>1,-xtrue=>1);
     my ($min,$max,$step) = split /\s/,$dividing;
 
     # draw depths distribution
@@ -484,11 +490,11 @@ if ($conf->{show_tails} || $OPTS{show_tails}){
 }
 
 # draw legend for TS
+my $ly = $oy;
+my $lx = $gex + $spacing * 2;
+my $lh = $tsh;
 if ($legend && $conf->{show_transcirpts})
 {
-    my $ly = $oy;
-    my $lx = $gex + $spacing * 2;
-    my $lh = $tsh;
     foreach my $item (@flags)
     {
         my $item_h = $heights{$item};
@@ -497,7 +503,24 @@ if ($legend && $conf->{show_transcirpts})
         $ly += $lh + $spacing;
     }
 
+    $ly += $lh + $spacing;
     timeLOG("the Legend was drew ...");
+}
+
+# draw unit scale 
+if (defined $conf->{scale}){
+
+    my $scale = $conf->{scale} == 0 ? auto_scale($legend_width*0.5,$count,$gex-$gox) : $conf->{scale};
+    my $size  = fetch_axis_dis($scale,1,$count,$gex-$gox);
+    my $scale_y = $ly + $font_height + $spacing;
+    my $label_w = $font->fetch_text_width($scale);
+    
+    $svg->text(x=>$lx+$size/2-$label_w/2,y=>$ly + $font_height,style=>$font_style)->cdata($scale);
+    $svg->line(x1=>$lx,x2=>$lx+$size,y1=>$scale_y,y2=>$scale_y,style=>"stroke-width:2;stroke:#000000");
+    $svg->line(x1=>$lx,x2=>$lx,y1=>$scale_y-4,y2=>$scale_y+4,style=>"stroke-width:2;stroke:#000000");
+    $svg->line(x1=>$lx+$size,x2=>$lx+$size,y1=>$scale_y-4,y2=>$scale_y+4,style=>"stroke-width:2;stroke:#000000");
+    
+    timeLOG("the Scale was drew ...");
 }
 
 ##  save figure
@@ -519,12 +542,14 @@ sub fetch_gene_loci {
     my %flags = map { $_ => 1 } split /,/ , $conf->{element_flags};
     my @loci;
     my %loci;
+    
+    system("grep $gene $gtf > $gene.tmp.gtf");
+    $gtf = "$gene.tmp.gtf";
 
     open GTF,$gtf or die "can't open gtf file, $gtf $!";
     while(<GTF>){
+        next if -1 == index($_,"$gene\"");
         chomp;
-        next unless $_;
-        next if /^#/;
         
         my ($chr,$flag,$start,$end,$strand,$attrs) = (split /\t/)[0,2,3,4,6,8];
         next unless $flags{$flag};
@@ -542,6 +567,7 @@ sub fetch_gene_loci {
         push @loci , $end;
     }
     close GTF;
+    system("rm $gene.tmp.gtf");
     
     ERROR("gene_not_in_gtf, $gene is not exists in gtf file!") if ($#loci == -1);
 
@@ -575,10 +601,14 @@ sub check_conf {
     default_OPTS($conf,"intron_background");
     default_OPTS($conf,"upstream");
     default_OPTS($conf,"downstream");
+    default_OPTS($conf,"methy_type");
     $conf->{legend} = 1 if ($OPTS{legend});
 
     ERROR("[no_gtf_ERROR] gtf file must be defined") unless $conf->{gtf};
-    ERROR("[no_loci_ERROR] the target loci must be defined") unless $conf->{loci} || $conf->{gene};
+    unless ($conf->{gene}){
+        WARN("[no_gene_ERROR] the target gene must be defined\n");
+        &usage;
+    }
     
     default_set($conf,"width",1000);
     default_set($conf,"unit_depth_height",100);
@@ -815,6 +845,11 @@ sub fetch_depths_from_conf {
         $samples{$label}{juncs} = $as->{junction} if ($as->{junction});
         $samples{$label}{color} = $as->{color} // $colors[$order];
 
+        $samples{$label}{plot}  = $as->{plot}            ? $as->{plot} : 
+                                  $bam_file =~ /\.bam$/  ? "area"      : 
+                                  $bam_file =~ /\.cout$/ ? "bar"       : 
+                                  $bam_file =~ /\.bed/   ? "area"      : "area";
+
         $order ++;
     }
 
@@ -838,6 +873,10 @@ sub fetch_depths_from_ARGV {
         $samples{$label}{bam}   = $bam_file;
         $samples{$label}{juncs} = $juncs[$order]  if ($OPTS{juncs});
         $samples{$label}{color} = $colors[$order];
+        
+        $samples{$label}{plot}  = $bam_file =~ /\.bam$/  ? "area" : 
+                                  $bam_file =~ /\.cout$/ ? "bar"  : 
+                                  $bam_file =~ /\.bed/   ? "area" : "area";
 
         $order ++;
     }
@@ -848,16 +887,35 @@ sub fetch_depths_from_ARGV {
 sub fetch_depth {
     my ($bam,$chr,$sta,$end) = @_;
     my %depth;
-
+    
     ERROR("bam file is not exists, [$bam]") unless -e $bam;
-    ERROR("cannot found the index for [$bam]") unless -e "$bam.bai";
 
-    my $text = `$samtools depth -d 0 -r "$chr:$sta-$end" $bam`;
-    my @lines = split /\n/ , $text;
+    if ($bam =~ /\.bam$/){
+        ERROR("cannot found the index for [$bam]") unless -e "$bam.bai";
 
-    foreach my $line (@lines){
-        my ($scf,$site,$num) = split /\t/ , $line;
-        $depth{$site} = $num;
+        my $text = `$samtools depth -d 0 -r "$chr:$sta-$end" $bam`;
+        my @lines = split /\n/ , $text;
+
+        foreach my $line (@lines){
+            my ($scf,$site,$num) = split /\t/ , $line;
+            $depth{$site} = $num;
+        }
+    }elsif ($bam =~ /\.cout$/){
+        open my $fh,$bam or die $!;
+        while(<$fh>){
+            chomp;
+            my ($scf,$site,$strand,$type,$nmC,$mC) = (split /\t/)[0,1,2,3,6,7];
+            next unless ($scf eq $chr && $site>=$sta && $site <=$end);
+            next if ($conf->{methy_type} && $conf->{methy_type} ne $type);
+            my $sum = $nmC + $mC;
+            next if $sum == 0;
+            my $ratio = $mC / $sum;
+            $ratio = -$ratio if ($strand eq "-" && $OPTS{strand});
+            $depth{$site} = $ratio;
+        }
+        close $fh;
+    }elsif ($bam =~ /\.bed$/){
+        
     }
     
     my @depths = map { $depth{$_} || 0 } $sta .. $end;
@@ -1055,6 +1113,13 @@ sub isoverlap {
 
     my $isoverlap = ($s1 >= $s2 && $s1 <= $e2) || ($e1 >= $s2 && $e1 <= $e2) ? 1 : 0;
     if ($isoverlap) { $flag = not $flag; return $flag } else { return $rawflag }
+}
+
+sub auto_scale {
+    my ( $size , $count , $total_size ) = @_;
+    my $len = sprintf ("%e" , $size * $count / $total_size);
+    my ($num,$unit) = split /e/ , $len;
+    return (round($num) * (10**$unit));
 }
 
 sub usage {
