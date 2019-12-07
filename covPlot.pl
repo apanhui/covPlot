@@ -82,7 +82,7 @@ if (@ARGV){
 # read the bam files from conf file
 }else{
     ($depths,$samples) = fetch_depths_from_conf($conf,$chr,$start,$end);
-     %styles = parse_styles($conf);
+     %styles = parse_styles($conf,$samples);
 }
 
 my %depths  = %{$depths};
@@ -319,17 +319,30 @@ foreach my $sample (@samples){
     my ($min,$max,$step) = split /\s/,$dividing;
 
     # draw depths distribution
-    my @xv = ($gox);
-    my @yv = ($height);
-    foreach my $depth (@depths){
-        my ($pos,$num) = @$depth;
-        push @xv , $gox + fetch_axis_dis($pos,1,$count,$gex-$gox);
-        push @yv , $height - fetch_axis_dis($num,$min,$max,$uhd);
+    my $plot_oy = $min_num < 0 ? $height - $uhd/2 : $height;
+    if ($styles{$sample}{plot} eq "area"){
+        my @xv = ($gox);
+        my @yv = ($plot_oy);
+        foreach my $depth (@depths){
+            my ($pos,$num) = @$depth;
+            push @xv , $gox + fetch_axis_dis($pos,1,$count,$gex-$gox);
+            my $ydis = $min_num < 0 ? fetch_axis_dis($num,0,$max,$uhd/2) : fetch_axis_dis($num,$min,$max,$uhd);
+            push @yv , $plot_oy - $ydis;
+        }
+        push @xv , $gex;
+        push @yv , $height;
+        my $points = $svg->get_path(x=>\@xv,y=>\@yv,-type=>'polygon');
+        $svg->polygon(%$points,style=>{fill=>$styles{$sample}{color},'stroke-width'=>0},id=>$sample);
+    }elsif ($styles{$sample}{plot} eq "bar"){
+        foreach my $depth (@depths){
+            my ($pos,$num) = @$depth;
+            next if ($num == 0);
+            my $xv = $gox + fetch_axis_dis($pos,1,$count,$gex-$gox);
+            my $ydis = $min_num < 0 ? fetch_axis_dis($num,0,$max,$uhd/2) : fetch_axis_dis($num,$min,$max,$uhd);
+            my $yv = $plot_oy - $ydis;
+            $svg->line(x1=>$xv,x2=>$xv,y1=>$plot_oy,y2=>$yv,style=>"stroke-width:$styles{$sample}{sr_size};stroke:$styles{$sample}{color}");
+        }
     }
-    push @xv , $gex;
-    push @yv , $height;
-    my $points = $svg->get_path(x=>\@xv,y=>\@yv,-type=>'polygon');
-    $svg->polygon(%$points,style=>{fill=>$styles{$sample}{color},'stroke-width'=>0},id=>$sample);
 
     # draw y axis 
     $svg->line(x1=>$gox,x2=>$gox,y1=>$height,y2=>$height-$uhd,style=>"stroke-width:1;stroke:#000");
@@ -344,9 +357,7 @@ foreach my $sample (@samples){
     # show samples 
     my $sample_font = $font;
     $sample_font->setAttr("fill:$styles{$sample}{label_color};weight:bold;font-size:$styles{$sample}{label_size};");
-
     my $sample_label_width = $sample_font->fetch_text_width($sample);
-
     if ($conf->{samples_label_pos} eq "left"){
         $svg->text(x=>$gox-$sample_label_width-$max_tick_width-$spacing*2,y=>$height-$uhd/2+$font_height/2,
             style=>$sample_font->toStyle)->cdata($sample);
@@ -652,11 +663,14 @@ sub init_styles {
     my %styles = ();
 
     foreach my $sample (sort {$samples->{$a}->{order} <=> $samples->{$b}->{order}} keys %$samples){
-        my $style = {sr_size=>3,label_size=>12};
-        inherit_opts($conf->{ases} , $style);
+        my $style = {};
+        inherit_opts($conf->{ases},$style);
+        default_set($style,"label_size",12);
+        default_set($style,"sr_size",3);
         default_set($style,"label_color",$samples->{$sample}->{color});
         default_set($style,"sr_color",$samples->{$sample}->{color});
         default_set($style,"color",$samples->{$sample}->{color});
+        default_set($style,"plot",$samples->{$sample}->{plot});
         $styles{$sample} = $style;
     }
     
@@ -666,6 +680,7 @@ sub init_styles {
 # parse styles 
 sub parse_styles {
     my $conf = shift ;
+    my $samples = shift;
     my %styles = ();
     
     my @ases = ref $conf->{ases}->{as} eq "HASH"  ? ( $conf->{ases}->{as}  ) : 
@@ -874,9 +889,9 @@ sub fetch_depths_from_ARGV {
         $samples{$label}{juncs} = $juncs[$order]  if ($OPTS{juncs});
         $samples{$label}{color} = $colors[$order];
         
-        $samples{$label}{plot}  = $bam_file =~ /\.bam$/  ? "area" : 
-                                  $bam_file =~ /\.cout$/ ? "bar"  : 
-                                  $bam_file =~ /\.bed/   ? "area" : "area";
+        $samples{$label}{plot}  = $bam_file =~ /\.bam$/  ? "area"      : 
+                                  $bam_file =~ /\.cout$/ ? "bar"       : 
+                                  $bam_file =~ /\.bed/   ? "area"      : "area";
 
         $order ++;
     }
@@ -1127,7 +1142,7 @@ sub usage {
 Usage:   
 
 set bams in conf: perl $0 [options] --conf your.conf [ --gene target_gene ]
-set bams in cmd:  perl $0 [options] --conf your.conf [ --gene target_gene ] <*.bam>[s]
+set bams in cmd:  perl $0 [options] --conf your.conf [ --gene target_gene ] <*.bam|cout|bed>[s]
 
 Import Options:
          --help                      print the simple usage info
