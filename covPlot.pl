@@ -40,7 +40,7 @@ GetOptions(\%OPTS,
     'upstream:i','downstream:i',
     'intron_fix:i','intron_scale:s','intron_background:s',
     'show_heads','show_tails',
-    'strand','methy_type',
+    'strand','methy_type:s',
     'width:i','from_top:s','help');
 
 &usage if ($OPTS{'help'});
@@ -345,13 +345,15 @@ foreach my $sample (@samples){
     }
 
     # draw y axis 
-    $svg->line(x1=>$gox,x2=>$gox,y1=>$height,y2=>$height-$uhd,style=>"stroke-width:1;stroke:#000");
-    my $i;
-    for ($i=$min;$i<=$max;$i+=$step){
-        my $ticky = $height - fetch_axis_dis($i,$min,$max,$uhd);
-        $svg->line(x1=>$gox,x2=>$gox+4,y1=>$ticky,y2=>$ticky,style=>"stroke-width:1;stroke:#000");
-        my $tick_width = $font->fetch_text_width($i);
-        $svg->text(x=>$gox-$spacing-$tick_width,y=>$ticky+$font_height/2,style=>$font_style)->cdata($i)
+    if ($conf->{show_y_axis}){
+        $svg->line(x1=>$gox,x2=>$gox,y1=>$height,y2=>$height-$uhd,style=>"stroke-width:1;stroke:#000");
+        my $i;
+        for ($i=$min;$i<=$max;$i+=$step){
+            my $ticky = $height - fetch_axis_dis($i,$min,$max,$uhd);
+            $svg->line(x1=>$gox,x2=>$gox+4,y1=>$ticky,y2=>$ticky,style=>"stroke-width:1;stroke:#000");
+            my $tick_width = $font->fetch_text_width($i);
+            $svg->text(x=>$gox-$spacing-$tick_width,y=>$ticky+$font_height/2,style=>$font_style)->cdata($i)
+        }
     }
     
     # show samples 
@@ -539,10 +541,12 @@ if (defined $conf->{scale}){
 my $root = $svg->getElementByID("as_map");
 $root->setAttribute("height",$height+$margin);
 
-open OUT,">$gene.CovPlot.svg" or die $!;
+my $outfile = $conf->{'methy_type'} ? "$gene.$conf->{methy_type}.CovPlot.svg" : "$gene.CovPlot.svg";
+
+open OUT,">$outfile" or die $!;
 print OUT $svg->xmlify;
 close OUT;
-timeLOG("the figure [$gene.CovPlot.svg] was finished :)");
+timeLOG("the figure [$outfile] was finished :)");
 
 #-------------------------------------------------------------------------------
 #  sub functions
@@ -631,6 +635,7 @@ sub check_conf {
     default_set($conf,"upstream",0);
     default_set($conf,"downstream",0);
     default_set($conf,"element_flags","exon");
+    default_set($conf,"show_y_axis",1);
 
     return $conf;
 }
@@ -919,7 +924,7 @@ sub fetch_depth {
         open my $fh,$bam or die $!;
         while(<$fh>){
             chomp;
-            my ($scf,$site,$strand,$type,$nmC,$mC) = (split /\t/)[0,1,2,3,6,7];
+            my ($scf,$site,$strand,$type,$mC,$nmC) = (split /\t/)[0,1,2,3,6,7];
             next unless ($scf eq $chr && $site>=$sta && $site <=$end);
             next if ($conf->{methy_type} && $conf->{methy_type} ne $type);
             my $sum = $nmC + $mC;
@@ -1063,6 +1068,7 @@ sub fetch_marker {
     open my $fh_marker , $conf->{marker}->{loci} or die $!;
     while(<$fh_marker>){
         chomp;
+        next if (/^#/);
         my ($mchr,$msta,$mend,$id) = split /\t/;
         if ($mchr eq $chr && $msta >= $sta && $mend <= $end){
             push @marker , [$msta,$mend,$id];
